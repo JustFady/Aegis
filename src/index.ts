@@ -5,9 +5,12 @@ import { promisify } from "node:util";
 import chalk from "chalk";
 import { Command } from "commander";
 import inquirer from "inquirer";
+import { getCachedResult, saveCacheResult } from "./services/cache.js";
 import { getStagedDiff } from "./services/git.js";
 import { auditDiff } from "./services/openai.js";
+import type { AuditIssue } from "./services/openai.js";
 import { getApiKey, saveApiKey } from "./utils/config-store.js";
+import { parseDiff } from "./utils/diff-parser.js";
 
 const execAsync = promisify(exec);
 const program = new Command();
@@ -37,6 +40,11 @@ configCommand
 
 program.addCommand(configCommand);
 
+// Helper to normalize and compare file paths
+function pathsMatch(p1: string, p2: string): boolean {
+  return path.normalize(p1).replace(/^\.\//, "") === path.normalize(p2).replace(/^\.\//, "");
+}
+
 // Audit command
 program
   .command("audit")
@@ -62,12 +70,52 @@ program
         process.exit(0);
       }
 
-      // 3. Analyze diff
-      console.log(chalk.blue("Analyzing diff for security vulnerabilities..."));
-      const result = await auditDiff(apiKey, diff);
+      // 3. Parse staged diff and query cache
+      const fileDiffs = parseDiff(diff);
+      const cachedIssues: AuditIssue[] = [];
+      const cacheMisses: typeof fileDiffs = [];
 
-      // 4. Enforce status
-      if (result.status === "pass") {
+      console.log(chalk.blue("\nChecking Shadow Gateway cache..."));
+      for (const fileDiff of fileDiffs) {
+        const cached = getCachedResult(fileDiff.hash);
+        if (cached) {
+          console.log(
+            chalk.gray(
+              `- ${fileDiff.filePath}: ${cached.status === "pass" ? chalk.green("PASS") : chalk.red("FAIL")} (cached)`,
+            ),
+          );
+          cachedIssues.push(...cached.issues);
+        } else {
+          console.log(chalk.yellow(`- ${fileDiff.filePath}: cache miss`));
+          cacheMisses.push(fileDiff);
+        }
+      }
+
+      const newIssues: AuditIssue[] = [];
+
+      // 4. Call OpenAI for cache misses
+      if (cacheMisses.length > 0) {
+        console.log(chalk.blue("\nAuditing cache misses with OpenAI..."));
+        const combinedDiff = cacheMisses.map((m) => m.diffBlock).join("\n");
+        const result = await auditDiff(apiKey, combinedDiff);
+
+        // Save each miss to cache and collect issues
+        for (const fileDiff of cacheMisses) {
+          const fileIssues = result.issues.filter((issue) =>
+            pathsMatch(issue.file, fileDiff.filePath),
+          );
+          const status = fileIssues.length > 0 ? "fail" : "pass";
+          saveCacheResult(fileDiff.hash, fileDiff.filePath, status, fileIssues);
+          newIssues.push(...fileIssues);
+        }
+      } else {
+        console.log(chalk.green("\nAll staged files verified via cache."));
+      }
+
+      const allIssues = [...cachedIssues, ...newIssues];
+
+      // 5. Enforce status
+      if (allIssues.length === 0) {
         console.log(chalk.green("\n✔ Aegis Security Audit: PASSED. No vulnerabilities identified.\n"));
         process.exit(0);
       }
@@ -75,8 +123,8 @@ program
       console.error(chalk.red("\n🚨 Aegis Security Audit: FAILED. Vulnerabilities detected:\n"));
       let appliedAny = false;
 
-      for (let i = 0; i < result.issues.length; i++) {
-        const issue = result.issues[i];
+      for (let i = 0; i < allIssues.length; i++) {
+        const issue = allIssues[i];
         console.error(chalk.yellow(`[Issue #${i + 1}]`));
         console.error(chalk.red("  Vulnerability: ") + chalk.white(issue.description));
         console.error(chalk.green("  Suggested Fix: ") + chalk.cyan(issue.suggested_fix));

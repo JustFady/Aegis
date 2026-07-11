@@ -3,6 +3,9 @@ import OpenAI from "openai";
 export interface AuditIssue {
   description: string;
   suggested_fix: string;
+  file: string;
+  target_code: string;
+  replacement_code: string;
 }
 
 export interface AuditResult {
@@ -24,7 +27,10 @@ You must respond with a JSON object in the following format:
   "issues": [
     {
       "description": "A description of the vulnerability or security issue.",
-      "suggested_fix": "Clear guidelines on how to remediate the issue."
+      "suggested_fix": "Clear guidelines on how to remediate the issue.",
+      "file": "The relative path of the file containing this vulnerability (e.g., src/auth.ts).",
+      "target_code": "The exact character-for-character line or block of code in the file to be replaced. Be extremely precise with spacing and indentation.",
+      "replacement_code": "The new line or block of code that will replace target_code to resolve the issue."
     }
   ]
 }

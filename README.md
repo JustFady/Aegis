@@ -1,5 +1,7 @@
 # Aegis
 
+[![ci](https://github.com/JustFady/Aegis/actions/workflows/ci.yml/badge.svg)](https://github.com/JustFady/Aegis/actions/workflows/ci.yml)
+
 A pre-commit guardrail that audits your **staged git diff** for security problems with an LLM, caches verdicts per file-diff so unchanged code is never re-audited, and offers to apply the suggested fix in place. Exit code 1 blocks the commit until the issues are resolved.
 
 ```
